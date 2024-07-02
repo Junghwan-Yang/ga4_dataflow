@@ -1,7 +1,8 @@
 import apache_beam as beam
 from apache_beam.options.pipeline_options import PipelineOptions
-from apache_beam.io.gcp.bigquery import ReadFromBigQuery, WriteToBigQuery
-from apache_beam.io.gcp.bigquery import BigQuerySource
+from apache_beam.io.gcp.bigquery import WriteToBigQuery
+from apache_beam.io.gcp.bigquery import ReadFromBigQuery
+from apache_beam.io.gcp.bigquery_tools import parse_table_schema_from_json
 
 
 class ChosunGABigQueryOptions(PipelineOptions):
@@ -76,17 +77,22 @@ def run():
 
     # Use BigQueryIO.Read.from_query to get the table schema
     table_schema_query = f"SELECT * FROM `{project_id}.{dataset_id}.{table_id}` LIMIT 0"
-    table_schema = pipeline | beam.io.Read(
-        BigQuerySource(
-            query=table_schema_query,
-            use_standard_sql=True
-        )
-    ) | beam.Map(lambda x: x.schema)
+    table_schema = (pipeline
+                    | beam.io.Read(
+                ReadFromBigQuery(
+                    query=table_schema_query,
+                    use_standard_sql=True
+                )
+            )
+                    | beam.Map(lambda x: x.schema)
+                    | beam.combiners.ToList()
+                    | beam.Map(lambda schemas: parse_table_schema_from_json(str(schemas[0]))))
+    table_schema = beam.pvalue.AsSingleton(table_schema)
 
     # Read data from BigQuery
     input_data = (pipeline
                   | 'Read from BigQuery' >> beam.io.Read(
-                BigQuerySource(
+                ReadFromBigQuery(
                     table=pipeline_options.table_spec,
                     use_standard_sql=True
                 )
@@ -98,7 +104,7 @@ def run():
     input_data | 'Write to BigQuery' >> WriteToBigQuery(
         table=pipeline_options.output,
         schema=table_schema,
-        # ... (other options)
+        custom_gcs_temp_location=pipeline_options.custom_gcs_temp_location
     )
 
     result = pipeline.run()

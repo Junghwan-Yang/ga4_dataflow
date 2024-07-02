@@ -1,9 +1,7 @@
 import apache_beam as beam
 from apache_beam.options.pipeline_options import PipelineOptions
 from apache_beam.io.gcp.bigquery import ReadFromBigQuery, WriteToBigQuery
-from apache_beam.io.gcp.bigquery_tools import parse_table_schema_from_json
-import json
-import os
+from apache_beam.io.gcp.bigquery import BigQuerySource
 
 
 class ChosunGABigQueryOptions(PipelineOptions):
@@ -71,19 +69,28 @@ def run():
     pipeline_options = ChosunGABigQueryOptions()
     pipeline = beam.Pipeline(options=pipeline_options)
 
-    # Load schema from BigQuery table
     table_spec = pipeline_options.table_spec
-    project_id, dataset_id, table_id = table_spec.split(':')[-1].split('.')
-    schema_json = beam.io.gcp.bigquery.BigQuerySource.get_table_schema(
-        project_id=project_id,
-        dataset_id=dataset_id,
-        table_id=table_id
-    )
-    table_schema = parse_table_schema_from_json(schema_json)
+    project_id = "ga4-link-2022"
+    dataset_id = "analytics_310278593"
+    table_id = "events_20240701"
 
-    # Read from BigQuery
+    # Use BigQueryIO.Read.from_query to get the table schema
+    table_schema_query = f"SELECT * FROM `{project_id}.{dataset_id}.{table_id}` LIMIT 0"
+    table_schema = pipeline | beam.io.Read(
+        BigQuerySource(
+            query=table_schema_query,
+            use_standard_sql=True
+        )
+    ) | beam.Map(lambda x: x.schema)
+
+    # Read data from BigQuery
     input_data = (pipeline
-                  | 'Read from BigQuery' >> ReadFromBigQuery(table=pipeline_options.table_spec, method='DIRECT_READ')
+                  | 'Read from BigQuery' >> beam.io.Read(
+                BigQuerySource(
+                    table=pipeline_options.table_spec,
+                    use_standard_sql=True
+                )
+            )
                   | 'Process Data' >> beam.ParDo(ChosunGADataProcessing())
                   )
 
@@ -91,10 +98,7 @@ def run():
     input_data | 'Write to BigQuery' >> WriteToBigQuery(
         table=pipeline_options.output,
         schema=table_schema,
-        create_disposition=beam.io.BigQueryDisposition.CREATE_IF_NEEDED,
-        write_disposition=beam.io.BigQueryDisposition.WRITE_APPEND,
-        method='STORAGE_WRITE_API',
-        custom_gcs_temp_location=pipeline_options.custom_gcs_temp_location
+        # ... (other options)
     )
 
     result = pipeline.run()
